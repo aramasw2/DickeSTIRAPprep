@@ -136,3 +136,8 @@ def generate_dicke_state(N_atoms, N_excitations, Ncav):
     dicke_state = sum(basis_states) / np.sqrt(len(basis_states))
     
     return dicke_state
+
+
+
+def ACSq(t,Apulse,args):
+    return Apulse(t)**2
