@@ -7,6 +7,7 @@ from itertools import combinations
 from numba import jit
 import os
 from Qfunctions import*
+from Pulses import Pulse
 class DickeRaman:
     def __init__(self, Nbits, Ncav, Det, tdet, spem=False,cavdecay=False):
         """Initialize all properties and spin operators, Hamiltonian, etc."""
@@ -17,13 +18,13 @@ class DickeRaman:
         self.spem = spem
         self.cavdecay = cavdecay
         
-        #Initialize spin algebra for each qutrit
+        #Initialize spin algebra
         self.s1m_list, self.s2m_list, self.s1_list, self.s2_list, \
         self.s3_list, self.cav_list = SysAlgebra(Nbits,Ncav)
 
-        #Collective spin operators for the initial and final states
+        #Collective spin operators
         self.Jx = 1/Nbits*sum(self.s1m_list[n]*self.s2m_list[n].dag()+self.s2m_list[n]*self.s1m_list[n].dag() for n in range(len(self.s1m_list)))
-        self.Jy = -1j/Nbits*sum(self.s1m_list[n]*self.s2m_list[n].dag()-self.s2m_list[n]*self.s1m_list[n].dag() for n in range(len(self.s1m_list)))
+        self.Jy = -1j/Nbits*sum(self.s1m_list[n]*self.s2m_list[n].dag()-self.s2m_list[n]*self.s1m_list[n].dag() for n in  range(len(self.s1m_list)))
         self.Jz = 1/Nbits*sum(self.s1_list[n]-self.s3_list[n] for n in range(len(self.s1_list)))
         self.Jp = self.Jx+1j*self.Jy
         self.Jm = self.Jx-1j*self.Jy
@@ -32,20 +33,17 @@ class DickeRaman:
         
         #Initialize ground state density matrix (Lowest energy, no excitations)
         glist = [basis(3, 0) for _ in range(Nbits)]  # N qutrit ground states
-        self.pss0 = tensor(glist+[basis(Ncav,0)]) # N qutrit ground state with zero photon cavity state
+        self.pss0 = tensor(glist+[basis(Ncav,0)])
         self.times= np.array([])
         self.statelist = np.array([])
 
-    #Return lists of all operators for each qutrit
     def return_operators(self):
         return self.s1m_list, self.s2m_list, self.s1_list, self.s2_list,\
                 self.s3_list, self.cav_list
 
-    #Initialize state based on custom "state" entry
     def initial_state(self,state):
         self.pss0 = state
 
-    # Inject photons into cavity
     def inject_photon(self,npx=1.0,coherent=False):
         current_m = (self.pss0).ptrace(self.N).diag().argmax()  # Find the Fock state with max probability
 
@@ -56,14 +54,12 @@ class DickeRaman:
             D = displace(self.Ncav, npx)
             self.pss0 = tensor(tensor([qeye(3) for _ in range(self.N)]), D)\
                         * self.pss0
-            
         if coherent == False:
             A=(self.cav_list[0].dag())**int(npx)
             self.pss0 = A * self.pss0            
 
-    #Construct Hamiltonians using external Pulse objects
     def construct_ham(self,Pulse1, Pulse2):
-        
+        # construct the hamiltonian
         self.Pulse1=Pulse1
         self.Pulse2=Pulse2
         aop=self.cav_list[0]
@@ -72,11 +68,11 @@ class DickeRaman:
         Hd = sum(self.Det * op for op in self.s2_list)+\
              sum(self.tdet * op for op in self.s3_list)
 
+
         HintP = sum((op*aop.dag()+op.dag()*aop) for op in self.s1m_list) #Pump cavity interaction
         
         HintS = sum((op+op.dag()) for op in self.s2m_list) #Stokes classical pulse Hamiltonian
-        
-        #Define Hamiltonian obj
+        #Initialize Hamiltonian
         self.Ht = [Hd, [HintP,Pulse1], [HintS,Pulse2]]
 
         return self.Ht
@@ -84,7 +80,6 @@ class DickeRaman:
     def freqnoise(self,t,sigma,args):
         return generate_pulse_noise(t,sigma)
 
-    #Introduce time-dependent noise to cause fluctuations in the energies of the initial and final states
     def introduce_freqnoise(self,system="atomic",noise_type="Random",sigma=[0.0,0.0,0.0],noise_freq=100.0):
         aop=self.cav_list[0]
         sigma1, sigma2, sigmac= sigma
@@ -118,7 +113,6 @@ class DickeRaman:
 
         return self.Ht
 
-    #Introduce constant drift terms, randomly assigned, to each qutrit site
     def introduce_drift(self,driftA=0.0):
         if driftA>0.0:
             self.Hdrift=sum(generate_pulse_noise(0.0,sigma=driftA)*\
@@ -126,42 +120,39 @@ class DickeRaman:
             self.Ht.append(self.Hdrift)
         return self.Ht
 
-    #For Dynamic decoupling sequence. Introduce PiSwap pulse through direct unitary or Hamiltonian 
-    
     def global_piswap(self):
         sing_swap = basis(3,0)*basis(3,2).dag() + basis(3,2)*basis(3,0).dag()+ basis(3,1)*basis(3,1).dag()
         self.pss0 = tensor([sing_swap for _ in range(self.N)] + [qeye(self.Ncav)]) * self.pss0
         self.statelist[-1] = self.pss0
         return self.pss0
 
-    def introduce_globalpiswap(self,tc,dur):
+       
+    def introduce_globalpiswap(self,tcx,taux):
         sing_swap = basis(3,0)*basis(3,2).dag() + basis(3,2)*basis(3,0).dag()
         Hswap = sum(tensor([sing_swap if i == n else qeye(3) for i in range(self.N)] + [qeye(self.Ncav)])\
                      for n in range(self.N))
-        Pipulse=lambda t: np.pi/2*np.sqrt(1/(2*(dur**2)*np.pi))*np.exp(-(t-tc-dur)**2/(2*dur**2))
-        self.Ht.append([Hswap,Pipulse])
+        PiPulse=Pulse(1.0, 0.0, phase=0, pulse_type="pipulse", duration=taux, center=tcx, noise=None,noiseamp=0.0,\
+                      freqmult=100.0,sq=False)
+        self.Ht.append([Hswap,PiPulse])
 
     '''For two-photon transitions involving cavity-classical pulse
     coupling, introduce dispersive AC Stark shifts'''
+
+
+        
     def apply_ACdispersive(self,gx,APulse,Delta0):
-        '''
-        "gx": cavity coupling rate connecting intermediate (virtual) to state 2
-        "Apulse": Pump pulse connecting state 1 to intermediate (virtual)
-        "Delta0": 1 photon detuning, must satisfy |gx|,|Apulse|<<|Delta0|
-        '''
         aop=self.cav_list[0]
 
         
         self.Ht.append(sum(gx**2/Delta0*op*aop.dag()*aop\
                          for op in self.s2_list))
 
-        self.ACSq= lambda t: APulse(t)**2
-        self.ACgrH=[sum(1/Delta0*op for op in self.s1_list),self.ACSq]
+        #self.ACSq= lambda t: APulse(t)**2
+        self.ACgrH=[sum(1/Delta0*op for op in self.s1_list),APulse]
         self.Ht.append(self.ACgrH)
 
         return self.Ht
 
-    #Apply control field CPulse J_z with externally defined CPulse object
     def apply_controlfield(self,CPulse):
         self.ctrlH=[self.N*self.Jz,CPulse]
         self.Ht.append(self.ctrlH)
@@ -171,7 +162,6 @@ class DickeRaman:
         Hevo=QobjEvo(self.Ht)
         return expect(self.Jz, Hevo(0.0))
 
-    #Apply Lindbladian dissipators for spontaneous emission from state 2 and cavity decay
     def apply_dissipation(self,C1,C2,ka):
         aop=self.cav_list[0]
         self.c_ops=[]
@@ -181,7 +171,6 @@ class DickeRaman:
         if self.cavdecay == True:
             self.c_ops.append([np.sqrt(ka)*aop])
     
-    #Propagate solution forward using QuTiP's master equation solver 
     def simulate(self,tlist):        
         self.result = mesolve(self.Ht, self.pss0, tlist, self.c_ops,[])
         self.pss0= self.result.states[-1]
@@ -197,8 +186,7 @@ class DickeRaman:
                                    expect(self.Jsq, state)) for state in self.result.states])
             return Jxlst, Jylst, Jzlst, Jsqlst
     
-    #Propagate solution forward with Monte Carlo wavefunction solver
-    def simulate_mcwf(self, tlist, num_cpus=0, ntraj=100, options=None):
+    def simulate_mcwf(self, tlist, num_cpus=20, ntraj=100, options=None):
         # Use MCWF simulation with mesolve or mcsolve
         self.result = mcsolve(self.Ht, self.pss0, tlist, self.c_ops,[], ntraj=ntraj,options=options)
         self.pss0= self.result.states[-1]
@@ -206,7 +194,6 @@ class DickeRaman:
         self.statelist = np.append(self.statelist,self.result.states)
         return self.result
 
-    #Show evolution of J spin algebra observables on the Bloch sphere.
     def Bloch_animate(self,filename='bloch_sphere'):
         theta=np.pi/4
         fig = pyplot.figure()
