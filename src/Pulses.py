@@ -9,7 +9,7 @@ import os
 from Qfunctions import*
 
 class Pulse:
-    def __init__(self, amplitude, frequency, phase=0, pulse_type="Gaussian", duration=None, center=None, noise=None,noiseamp=0.0,freqmult=100.0):
+    def __init__(self, amplitude, frequency, phase=0, pulse_type="Gaussian", duration=None, center=None, noise=None,noiseamp=0.0,freqmult=100.0,sq=False):
         self.A = amplitude
         self.w = frequency
         self.phi = phase
@@ -20,6 +20,7 @@ class Pulse:
         self.tc = center
         self.precompute_noise = False
         self.nfreq=freqmult/duration
+        self.sq = sq
 
     def gaussian_pulse(self, t):
         """Gaussian pulse shape."""
@@ -42,6 +43,9 @@ class Pulse:
         """Constant pulse shape."""
         return self.A * np.cos(self.w*t +self.phi)
 
+    def pi_pulse(self, t):
+        return np.pi/2*np.sqrt(1/(2*(self.tau**2)*np.pi))*np.exp(-(t-self.tc-self.tau)**2/(2*self.tau**2))
+
     def precomputing_noise(self,tlist):
         self.precompute_noise = True
         # Initialize RNG state for Numba's fast noise
@@ -62,9 +66,10 @@ class Pulse:
             pulse_value = self.sawtooth_pulse(t)
         elif self.pulse_type == 'constant':
             pulse_value = self.constant_pulse(t)
+        elif self.pulse_type == 'pipulse':
+            pulse_value = self.pi_pulse(t)
         else:
             raise ValueError("Invalid pulse type specified. Choose from 'gaussian', 'square', 'sawtooth', 'constant'.")
-        
         # Add noise if the noise function is defined
         if self.noise is not None and self.na !=0:
             if self.precompute_noise == True:
@@ -72,9 +77,15 @@ class Pulse:
             else:
                 pulse_value = (1.0+fast_piecewise_noise(t, self.t_vals, self.noise_vals))*pulse_value
         if np.imag(pulse_value) == 0.0:
-            return np.real(pulse_value)
+            if self.sq == True:
+                return np.real(pulse_value)**2
+            else:
+                return np.real(pulse_value)
         else:
-            return pulse_value
+            if self.sq == True:
+                return pulse_value**2
+            else:
+                return pulse_value
     def plot_pulse(self,tlist):
         # Generate the pulse using __call__
         pulse = np.array([self(t) for t in tlist])
